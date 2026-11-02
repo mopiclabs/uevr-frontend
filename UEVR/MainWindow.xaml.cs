@@ -254,6 +254,8 @@ namespace UEVR {
                 return false;
             } catch (InvalidOperationException) {
                 return false;
+            } catch (Win32Exception) {
+                return true; // no access (an elevated game): can't tell, keep waiting
             }
         }
 
