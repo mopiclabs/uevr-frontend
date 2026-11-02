@@ -175,6 +175,12 @@ namespace UEVR {
         private string? m_commandLineAttachExe = null;
         private bool m_ignoreFutureVDWarnings = false;
 
+        // Mopic: launched with --attach (by Mopic Hub or the test harness), the injector shows no window: it injects,
+        // then goes away with the game. --show keeps the window (debugging).
+        private bool m_launchedWithAttach = false;
+        private bool m_hiddenAttach = false;
+        private int m_attachedProcessId = 0;
+
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         public static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab);
 
@@ -186,11 +192,31 @@ namespace UEVR {
             // Grab the command-line arguments
             string[] args = Environment.GetCommandLineArgs();
 
+            bool showWindow = false;
+
             // Parse and handle arguments
             foreach (string arg in args) {
                 if (arg.StartsWith("--attach=")) {
                     m_commandLineAttachExe = arg.Split('=')[1];
+                } else if (arg == "--show") {
+                    showWindow = true;
                 }
+            }
+
+            m_launchedWithAttach = m_commandLineAttachExe != null;
+            m_hiddenAttach = m_launchedWithAttach && !showWindow;
+
+            if (m_hiddenAttach) {
+                // Transparent, off every monitor, out of the taskbar, never focused, and hidden after its first render:
+                // a Hide() from Loaded runs inside Show() and doesn't stick. The update timer keeps running hidden.
+                ShowInTaskbar = false;
+                ShowActivated = false;
+                AllowsTransparency = true; // WindowStyle is None
+                Opacity = 0;
+                WindowStartupLocation = WindowStartupLocation.Manual;
+                Left = -32000;
+                Top = -32000;
+                ContentRendered += (sender, e) => Hide();
             }
         }
 
@@ -219,6 +245,18 @@ namespace UEVR {
 
         private static bool IsExecutableRunning(string executableName) {
             return Process.GetProcesses().Any(p => p.ProcessName.Equals(executableName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsProcessRunning(int processId) {
+            try {
+                return !Process.GetProcessById(processId).HasExited;
+            } catch (ArgumentException) {
+                return false;
+            } catch (InvalidOperationException) {
+                return false;
+            } catch (Win32Exception) {
+                return true; // no access (an elevated game): can't tell, keep waiting
+            }
         }
 
         private void RestartAsAdminButton_Click(object sender, RoutedEventArgs e) {
@@ -356,6 +394,7 @@ namespace UEVR {
                         Injector.InjectDll(process.Id, "UEVRBackend.dll");
                     }
 
+                    m_attachedProcessId = process.Id;
                     m_lastAutoInjectTime = now;
                     m_commandLineAttachExe = null; // no need anymore.
                     FillProcessList();
@@ -398,9 +437,16 @@ namespace UEVR {
                     lastFrontendSignal = now;
                 }
             } else {
-                if (m_connected && !string.IsNullOrEmpty(m_commandLineAttachExe))
+                // m_commandLineAttachExe is cleared once injected, so the launch itself is remembered for this
+                if (m_connected && m_launchedWithAttach)
                 {
                     // If we launched with an attached game exe, we shut ourselves down once that game closes.
+                    Application.Current.Shutdown();
+                    return;
+                }
+
+                // Hidden, nothing would ever close us if the game exits before UEVR connects
+                if (m_hiddenAttach && m_attachedProcessId != 0 && !IsProcessRunning(m_attachedProcessId)) {
                     Application.Current.Shutdown();
                     return;
                 }
@@ -570,7 +616,7 @@ namespace UEVR {
         private bool m_virtualDesktopWarned = false;
         private bool m_virtualDesktopChecked = false;
         private void Check_VirtualDesktop() {
-            if (m_virtualDesktopWarned || m_ignoreFutureVDWarnings) {
+            if (m_virtualDesktopWarned || m_ignoreFutureVDWarnings || m_hiddenAttach) {
                 return;
             }
 
@@ -915,7 +961,8 @@ namespace UEVR {
                         if (gameDirectory != null) {
                             var pluginsDir = AreVRPluginsPresent(gameDirectory);
 
-                            if (pluginsDir != null) {
+                            // hidden, there is no window to answer these from
+                            if (pluginsDir != null && !m_hiddenAttach) {
                                 MessageBox.Show("VR plugins have been detected in the game install directory.\n" +
                                                 "You may want to delete or rename these as they will cause issues with the mod.\n" +
                                                 "You may also want to pass -nohmd as a command-line option to the game. This can sometimes work without deleting anything.");
@@ -935,7 +982,7 @@ namespace UEVR {
                             m_iniListView.ItemsSource = null; // Because we are switching processes.
                             InitializeConfig(p.ProcessName);
 
-                            if (!IsUnrealEngineGame(gameDirectory, m_lastSelectedProcessName) && !m_isFirstProcessFill) {
+                            if (!IsUnrealEngineGame(gameDirectory, m_lastSelectedProcessName) && !m_isFirstProcessFill && !m_hiddenAttach) {
                                 MessageBox.Show("Warning: " + m_lastSelectedProcessName + " does not appear to be an Unreal Engine title");
                             }
                         }
