@@ -11,6 +11,16 @@ using System.Reflection;
 
 namespace UEVR {
     class Injector {
+        // Mopic: AttachSession turns these off: without a window, a box would have no owner, could sit behind the
+        // fullscreen game, and would stop the session's timer until someone found it
+        public static bool ShowErrors = true;
+
+        private static void ShowError(string message) {
+            if (ShowErrors) {
+                MessageBox.Show(message);
+            }
+        }
+
         [DllImport("kernel32.dll")]
         public static extern IntPtr OpenProcess(int dwDesiredAccess, bool bInheritHandle, int dwProcessId);
 
@@ -57,7 +67,7 @@ namespace UEVR {
             }
 
             if (!System.IO.File.Exists(dllPath)) {
-                MessageBox.Show($"{originalPath} does not appear to exist! Check if any anti-virus software has deleted the file. Reinstall UEVR if necessary.\n\nBaseDirectory: {AppContext.BaseDirectory}");
+                ShowError($"{originalPath} does not appear to exist! Check if any anti-virus software has deleted the file. Reinstall UEVR if necessary.\n\nBaseDirectory: {AppContext.BaseDirectory}");
             }
 
             dllBase = IntPtr.Zero;
@@ -68,7 +78,7 @@ namespace UEVR {
             IntPtr processHandle = OpenProcess(0x1F0FFF, false, processId);
 
             if (processHandle == IntPtr.Zero) {
-                MessageBox.Show("Could not open a handle to the target process.\nYou may need to start this program as an administrator, or the process may be protected.");
+                ShowError("Could not open a handle to the target process.\nYou may need to start this program as an administrator, or the process may be protected.");
                 return false;
             }
 
@@ -76,7 +86,7 @@ namespace UEVR {
             IntPtr loadLibraryAddress = GetProcAddress(GetModuleHandle("kernel32.dll"), "LoadLibraryW");
 
             if (loadLibraryAddress == IntPtr.Zero) {
-                MessageBox.Show("Could not obtain LoadLibraryW address in the target process.");
+                ShowError("Could not obtain LoadLibraryW address in the target process.");
                 return false;
             }
 
@@ -84,7 +94,7 @@ namespace UEVR {
             IntPtr dllPathAddress = VirtualAllocEx(processHandle, IntPtr.Zero, (uint)fullPath.Length, 0x1000, 0x40);
 
             if (dllPathAddress == IntPtr.Zero) {
-                MessageBox.Show("Failed to allocate memory in the target process.");
+                ShowError("Failed to allocate memory in the target process.");
                 return false;
             }
 
@@ -97,7 +107,7 @@ namespace UEVR {
             IntPtr threadHandle = CreateRemoteThread(processHandle, IntPtr.Zero, 0, loadLibraryAddress, dllPathAddress, 0, IntPtr.Zero);
 
             if (threadHandle == IntPtr.Zero) {
-                MessageBox.Show("Failed to create remote thread in the target processs.");
+                ShowError("Failed to create remote thread in the target processs.");
                 return false;
             }
 
@@ -115,7 +125,7 @@ namespace UEVR {
                 }
             } catch (Exception ex) {
                 Console.WriteLine($"Exception caught: {ex}");
-                MessageBox.Show($"Exception while injecting: {ex}");
+                ShowError($"Exception while injecting: {ex}");
             }
 
             return true;
@@ -137,7 +147,7 @@ namespace UEVR {
             IntPtr processHandle = OpenProcess(0x1F0FFF, false, processId);
 
             if (processHandle == IntPtr.Zero) {
-                MessageBox.Show("Could not open a handle to the target process.\nYou may need to start this program as an administrator, or the process may be protected.");
+                ShowError("Could not open a handle to the target process.\nYou may need to start this program as an administrator, or the process may be protected.");
                 return false;
             }
 
@@ -145,14 +155,14 @@ namespace UEVR {
             IntPtr localDllHandle = LoadLibrary(dllPath);
 
             if (localDllHandle == IntPtr.Zero) {
-                MessageBox.Show("Could not load the target DLL into our own process.");
+                ShowError("Could not load the target DLL into our own process.");
                 return false;
             }
 
             IntPtr localVa = GetProcAddress(localDllHandle, functionName);
 
             if (localVa == IntPtr.Zero) {
-                MessageBox.Show("Could not obtain " + functionName + " address in our own process.");
+                ShowError("Could not obtain " + functionName + " address in our own process.");
                 return false;
             }
 
@@ -163,7 +173,7 @@ namespace UEVR {
             IntPtr threadHandle = CreateRemoteThread(processHandle, IntPtr.Zero, 0, functionAddress, IntPtr.Zero, 0, IntPtr.Zero);
 
             if (threadHandle == IntPtr.Zero) {
-                MessageBox.Show("Failed to create remote thread in the target processs.");
+                ShowError("Failed to create remote thread in the target processs.");
                 return false;
             }
 

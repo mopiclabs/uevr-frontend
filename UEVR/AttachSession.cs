@@ -13,8 +13,9 @@ namespace UEVR {
     // injector creates no window at all. It injects the way MainWindow's attach path does, with the settings that
     // window saved, answers the backend's config signal, and exits with the game.
     class AttachSession {
-        // A game that never starts must not leave us waiting to inject a later launch of it
-        private static readonly TimeSpan GameWaitLimit = TimeSpan.FromMinutes(10);
+        // A game that never starts must not leave us waiting to inject a later launch of it. Counted in timer ticks
+        // (about 1 s each), so time the PC spends asleep doesn't count; Steam updates and launchers can take a while.
+        private const int GameWaitLimitTicks = 30 * 60;
 
         private readonly string m_processName;
         private readonly MainWindowSettings m_settings = new MainWindowSettings();
@@ -22,8 +23,8 @@ namespace UEVR {
         private readonly DispatcherTimer m_updateTimer = new DispatcherTimer {
             Interval = new TimeSpan(0, 0, 1)
         };
-        private readonly DateTime m_startTime = DateTime.Now;
 
+        private int m_waitTicks = 0;
         private int m_attachedProcessId = 0;
         private bool m_connected = false;
         private DateTime m_lastFrontendSignal = DateTime.MinValue;
@@ -33,37 +34,48 @@ namespace UEVR {
         }
 
         public void Start() {
+            Injector.ShowErrors = false;
+
             m_updateTimer.Tick += (sender, e) => Update();
             m_updateTimer.Start();
         }
 
         private void Update() {
-            if (m_attachedProcessId == 0) {
-                if (!TryInject() && DateTime.Now - m_startTime > GameWaitLimit) {
+            try {
+                if (m_attachedProcessId == 0) {
+                    if (!TryInject() && ++m_waitTicks > GameWaitLimitTicks) {
+                        Application.Current.Shutdown();
+                    }
+
+                    return;
+                }
+
+                if (!IsProcessRunning(m_attachedProcessId)) {
+                    Application.Current.Shutdown();
+                    return;
+                }
+
+                var data = SharedMemory.GetData();
+                DateTime now = DateTime.Now;
+
+                // The mapping's name is global: only our game's UEVR counts
+                if (data?.pid == m_attachedProcessId) {
+                    m_connected = true;
+
+                    if (data?.signalFrontendConfigSetup == true && (now - m_lastFrontendSignal > TimeSpan.FromSeconds(1))) {
+                        SharedMemory.SendCommand(SharedMemory.Command.ConfigSetupAcknowledged);
+                        m_lastFrontendSignal = now;
+                    }
+
+                    return;
+                }
+
+                // UEVR went away while the game runs on; MainWindow's attach path exits then too
+                if (m_connected) {
                     Application.Current.Shutdown();
                 }
-
-                return;
-            }
-
-            var data = SharedMemory.GetData();
-            DateTime now = DateTime.Now;
-
-            // The mapping's name is global: only our game's UEVR counts
-            if (data?.pid == m_attachedProcessId) {
-                m_connected = true;
-
-                if (data?.signalFrontendConfigSetup == true && (now - m_lastFrontendSignal > TimeSpan.FromSeconds(1))) {
-                    SharedMemory.SendCommand(SharedMemory.Command.ConfigSetupAcknowledged);
-                    m_lastFrontendSignal = now;
-                }
-
-                return;
-            }
-
-            // UEVR went away with the game, or the game closed before UEVR connected
-            if (m_connected || !IsProcessRunning(m_attachedProcessId)) {
-                Application.Current.Shutdown();
+            } catch (Exception) {
+                // Nobody sees this process: an exception (the game exiting mid-injection) must not crash it
             }
         }
 
@@ -73,6 +85,9 @@ namespace UEVR {
             if (process == null) {
                 return false;
             }
+
+            // Set first: when injecting throws, the next tick checks on this game instead of injecting it again
+            m_attachedProcessId = process.Id;
 
             if (m_settings.NullifyVRPluginsCheckbox) {
                 IntPtr nullifierBase;
@@ -88,8 +103,6 @@ namespace UEVR {
                 RequestRuntime(process.ProcessName, runtimeName);
                 Injector.InjectDll(process.Id, "UEVRBackend.dll");
             }
-
-            m_attachedProcessId = process.Id;
 
             if (m_settings.FocusGameOnInjection) {
                 MainWindow.SwitchToThisWindow(process.MainWindowHandle, true);
